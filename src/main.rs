@@ -34,13 +34,15 @@ fn bench_paths_full(graph: PackedGraph) -> Result<u128, Box<dyn std::error::Erro
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let now = Instant::now();
     let cli = Cli::parse();
 
     let gfa_parser = GFAParser::new();
     let gfa = gfa_parser.parse_file(cli.path)?;
     let graph = from_gfa::<PackedGraph, ()>(&gfa);
+    let parsing = now.elapsed().as_millis();
     let paths_full = bench_paths_full(graph)?;
 
-    eprintln!("paths_full: {}", paths_full);
+    eprintln!("paths_full: {},\t{}", paths_full, paths_full + parsing);
     Ok(())
 }
