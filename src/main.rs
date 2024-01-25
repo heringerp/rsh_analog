@@ -4,10 +4,10 @@ use handlegraph::{
     handle::Handle,
     conversion::from_gfa,
     packedgraph::PackedGraph,
-    pathhandlegraph::{GraphPathNames, IntoNodeOccurrences, GraphPaths},
+    pathhandlegraph::{GraphPathNames, IntoNodeOccurrences, GraphPaths, IntoPathIds, PathId}, handlegraph::IntoNeighbors,
 };
 use rayon::prelude::*;
-use std::path::PathBuf;
+use std::{path::PathBuf, collections::HashSet, hash::Hash, u128};
 use std::io::{Error, ErrorKind};
 use std::time::Instant;
 
@@ -17,18 +17,54 @@ struct Cli {
     path: PathBuf,
 }
 
+fn remove_duplicates<T: Eq + Hash>(s: Vec<T>) -> Vec<T> {
+    s.into_iter().collect::<HashSet<_>>().into_iter().collect::<Vec<_>>()
+}
 
-fn bench_paths_full(graph: PackedGraph) -> Result<u128, Box<dyn std::error::Error>> {
+fn path_name(graph: &PackedGraph, path_id: PathId) -> Option<String> {
+    graph.get_path_name(path_id).map(|n| std::str::from_utf8(&n.collect::<Vec<_>>()).unwrap().to_owned())
+}
+
+fn bench_paths_full(graph: &PackedGraph) -> Result<u128, Box<dyn std::error::Error>> {
     let now = Instant::now();
     let handle = Handle::new(51273, gfa::gfa::Orientation::Forward);
     let steps = graph.steps_on_handle(handle).ok_or(Error::new(ErrorKind::Other, "Handle should have steps"))?;
     let path_infos: Vec<_> = steps.par_bridge()
-        .map(|step| (graph
-                     .get_path_name(step.0)
-                     .map(|n| std::str::from_utf8(&n.collect::<Vec<_>>()).unwrap().to_owned()), graph.path_len(step.0)))
+        .map(|step| (path_name(graph, step.0), graph.path_len(step.0)))
         .collect();
-    for info in path_infos {
+    let filtered_infos = remove_duplicates(path_infos);
+    for info in filtered_infos {
         println!("{:?}", info);
+    }
+    Ok(now.elapsed().as_millis())
+}
+
+fn bench_steps_iolinks(graph: &PackedGraph) -> Result<u128, Box<dyn std::error::Error>> {
+    let now = Instant::now();
+    let steps = graph.path_ids().par_bridge().map(|id| {
+        if graph.path_first_step(id).is_none() {
+            return Vec::new().into_iter();
+        }
+        let mut cstep = graph.path_first_step(id).unwrap();
+        let mut idx = 1;
+        let handle = graph.path_handle_at_step(id, cstep).unwrap();
+        let ilinks = graph.degree(handle, handlegraph::handle::Direction::Left);
+        let olinks = graph.degree(handle, handlegraph::handle::Direction::Right);
+        let cpath_name = path_name(graph, id);
+        let mut v = vec![(cpath_name.clone(), idx, ilinks, olinks)];
+        while graph.path_next_step(id, cstep).is_some() {
+            cstep = graph.path_next_step(id, cstep).unwrap();
+            idx = idx + 1;
+            let handle = graph.path_handle_at_step(id, cstep).unwrap();
+            let ilinks = graph.degree(handle, handlegraph::handle::Direction::Left);
+            let olinks = graph.degree(handle, handlegraph::handle::Direction::Right);
+            v.push((cpath_name.clone(), idx, ilinks, olinks));
+        }
+        v.into_iter()
+    }).collect::<Vec<_>>();
+    let steps = steps.into_iter().flatten();
+    for step in steps {
+        println!("{:?}", step);
     }
     Ok(now.elapsed().as_millis())
 }
@@ -41,8 +77,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gfa = gfa_parser.parse_file(cli.path)?;
     let graph = from_gfa::<PackedGraph, ()>(&gfa);
     let parsing = now.elapsed().as_millis();
-    let paths_full = bench_paths_full(graph)?;
+    let paths_full = bench_paths_full(&graph)?;
+    let steps_iolinks = bench_steps_iolinks(&graph)?;
 
     eprintln!("paths_full: {},\t{}", paths_full, paths_full + parsing);
+    eprintln!("steps_iolinks: {},\t{}", steps_iolinks, steps_iolinks + parsing);
     Ok(())
 }
