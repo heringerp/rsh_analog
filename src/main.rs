@@ -4,7 +4,7 @@ use handlegraph::{
     handle::Handle,
     conversion::from_gfa,
     packedgraph::PackedGraph,
-    pathhandlegraph::{GraphPathNames, IntoNodeOccurrences, GraphPaths, IntoPathIds, PathId}, handlegraph::IntoNeighbors,
+    pathhandlegraph::{GraphPathNames, IntoNodeOccurrences, GraphPaths, IntoPathIds, PathId}, handlegraph::{IntoNeighbors, IntoHandles},
 };
 use rayon::prelude::*;
 use std::{path::PathBuf, collections::HashSet, hash::Hash, u128};
@@ -15,6 +15,9 @@ use std::time::Instant;
 #[command(author, version, about, long_about = None)]
 struct Cli {
     path: PathBuf,
+
+    #[arg(short, long)]
+    query: String,
 }
 
 fn remove_duplicates<T: Eq + Hash>(s: Vec<T>) -> Vec<T> {
@@ -69,18 +72,53 @@ fn bench_steps_iolinks(graph: &PackedGraph) -> Result<u128, Box<dyn std::error::
     Ok(now.elapsed().as_millis())
 }
 
+fn bench_path_lengths(graph: &PackedGraph) -> Result<u128, Box<dyn std::error::Error>> {
+    let now = Instant::now();
+    let paths = graph.path_ids().map(|id| (path_name(graph, id), graph.path_len(id))).collect::<Vec<_>>();
+    for path in paths {
+        println!("{:?}", path);
+    }
+    Ok(now.elapsed().as_millis())
+}
+
+fn bench_nodes_high_path_count(graph: &PackedGraph) -> Result<u128, Box<dyn std::error::Error>> {
+    let now = Instant::now();
+    let mut nodes = graph.handles().map(|handle| (handle.unpack_number(), graph.steps_on_handle(handle).map_or(0, |iter| iter.count()))).collect::<Vec<_>>();
+    nodes.sort_by_key(|t| t.1);
+    for node in nodes {
+        println!("{:?}", node);
+    }
+    Ok(now.elapsed().as_millis())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let now = Instant::now();
     let cli = Cli::parse();
-
     let gfa_parser = GFAParser::new();
     let gfa = gfa_parser.parse_file(cli.path)?;
     let graph = from_gfa::<PackedGraph, ()>(&gfa);
     let parsing = now.elapsed().as_millis();
-    let paths_full = bench_paths_full(&graph)?;
-    let steps_iolinks = bench_steps_iolinks(&graph)?;
+    match &cli.query[..] {
+        "nodes_high_path_count" => {
+            let nodes = bench_nodes_high_path_count(&graph)?;
+            eprintln!("nodes_high_path_count: {},\t{}", nodes, nodes + parsing);
+        },
+        "path_lengths" => {
+            let paths = bench_path_lengths(&graph)?;
+            eprintln!("paths_lengths: {},\t{}", paths, paths + parsing);
+        },
+        "path_lengths_through_node" => {
+            let paths_full = bench_paths_full(&graph)?;
+            eprintln!("paths_full: {},\t{}", paths_full, paths_full + parsing);
+        },
+        "steps_ionodes" => {
+            let steps_iolinks = bench_steps_iolinks(&graph)?;
+            eprintln!("steps_iolinks: {},\t{}", steps_iolinks, steps_iolinks + parsing);
+        },
+        _ => {
+            eprintln!("Please provide a valid query")
+        }
+    }
 
-    eprintln!("paths_full: {},\t{}", paths_full, paths_full + parsing);
-    eprintln!("steps_iolinks: {},\t{}", steps_iolinks, steps_iolinks + parsing);
     Ok(())
 }
